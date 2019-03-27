@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" Tools for manipulating the alignments seralized file """
+""" Tools for manipulating the alignments serialized file """
 
 import logging
 import os
@@ -26,14 +26,19 @@ class Check():
         self.type = None
         self.output = arguments.output
         self.source_dir = self.get_source_dir(arguments)
+        self.validate()
         self.items = self.get_items()
 
         self.output_message = ""
         logger.debug("Initialized %s", self.__class__.__name__)
 
     def get_source_dir(self, arguments):
-        """ Set the correct source dir """
-        if hasattr(arguments, "faces_dir") and arguments.faces_dir:
+        """ Set the correct source folder """
+        if (hasattr(arguments, "faces_dir") and arguments.faces_dir and
+                hasattr(arguments, "frames_dir") and arguments.frames_dir):
+            logger.error("Only select a source frames (-fr) or source faces (-fc) folder")
+            exit(0)
+        elif hasattr(arguments, "faces_dir") and arguments.faces_dir:
             self.type = "faces"
             source_dir = arguments.faces_dir
         elif hasattr(arguments, "frames_dir") and arguments.frames_dir:
@@ -53,7 +58,6 @@ class Check():
     def process(self):
         """ Process the frames check against the alignments file """
         logger.info("[CHECK %s]", self.type.upper())
-        self.validate()
         items_output = self.compile_output()
         self.output_results(items_output)
 
@@ -64,8 +68,8 @@ class Check():
             logger.warning("Missing_frames was selected with move output, but there will "
                            "be nothing to move. Defaulting to output: console")
             self.output = "console"
-        elif self.type == "faces" and self.job not in ("multi-faces", "leftover-faces"):
-            logger.warning("The selected folder is not valid. Only folder set with '-fc' is "
+        if self.type == "faces" and self.job not in ("multi-faces", "leftover-faces"):
+            logger.warning("The selected folder is not valid. Faces folder (-fc) is only "
                            "supported for 'multi-faces' and 'leftover-faces'")
             exit(0)
 
@@ -87,31 +91,46 @@ class Check():
                 yield frame_name
 
     def get_multi_faces(self):
-        """ yield each frame that has multiple faces
+        """ yield each frame or face that has multiple faces
             matched in alignments file """
-        if self.type == "faces":
-            self.output_message = "Multiple faces in frame"
-            frame_key = "face_hash"
-            retval_key = "face_fullname"
-        elif self.type == "frames":
-            self.output_message = "Frames with multiple faces"
-            frame_key = "frame_fullname"
-            retval_key = "frame_fullname"
-        logger.debug("frame_key: '%s', retval_key: '%s'", frame_key, retval_key)
+        process_type = getattr(self, "get_multi_faces_{}".format(self.type))
+        for item in process_type():
+            yield item
 
+    def get_multi_faces_frames(self):
+        """ Return Frames that contain multiple faces """
+        self.output_message = "Frames with multiple faces"
         for item in tqdm(self.items, desc=self.output_message):
-            frame = item[frame_key]
-            if self.type == "faces":
-                frame_idx = [(frame, idx)
-                             for frame, idx in self.alignments.hashes_to_frame[frame].items()]
-            retval = item[retval_key]
-            for frame, idx in frame_idx:
-                if self.alignments.frame_has_multiple_faces(frame):
-                    if self.type == "faces":
-                        # Add correct alignments index for moving faces
-                        retval = (retval, idx)
-                    logger.trace("Returning: '%s'", retval)
-                    yield retval
+            filename = item["frame_fullname"]
+            if not self.alignments.frame_has_multiple_faces(filename):
+                continue
+            logger.trace("Returning: '%s'", filename)
+            yield filename
+
+    def get_multi_faces_faces(self):
+        """ Return Faces when there are multiple faces in a frame """
+        self.output_message = "Multiple faces in frame"
+        seen_hash_dupes = set()
+        for item in tqdm(self.items, desc=self.output_message):
+            filename = item["face_fullname"]
+            f_hash = item["face_hash"]
+            frame_idx = [(frame, idx)
+                         for frame, idx in self.alignments.hashes_to_frame[f_hash].items()]
+
+            if len(frame_idx) > 1:
+                # If the same hash exists in multiple frames, select arbitrary frame
+                # and add to seen_hash_dupes so it is not selected again
+                logger.trace("Dupe hashes: %s", frame_idx)
+                frame_idx = [f_i for f_i in frame_idx if f_i not in seen_hash_dupes][0]
+                seen_hash_dupes.add(frame_idx)
+                frame_idx = [frame_idx]
+
+            frame_name, idx = frame_idx[0]
+            if not self.alignments.frame_has_multiple_faces(frame_name):
+                continue
+            retval = (filename, idx)
+            logger.trace("Returning: '%s'", retval)
+            yield retval
 
     def get_missing_alignments(self):
         """ yield each frame that does not exist in alignments file """
@@ -141,7 +160,7 @@ class Check():
             f_hash = face["face_hash"]
             if not self.alignments.hashes_to_frame.get(f_hash, None):
                 logger.debug("Returning: '%s'", face["face_fullname"])
-                yield face["face_fullname"]
+                yield face["face_fullname"], -1
 
     def output_results(self, items_output):
         """ Output the results in the requested format """
@@ -151,7 +170,7 @@ class Check():
         if self.output == "move":
             self.move_file(items_output)
             return
-        if self.job == "multi-faces":
+        if self.job in ("multi-faces", "leftover-faces"):
             # Strip the index for printed/file output
             items_output = [item[0] for item in items_output]
         output_message = "-----------------------------------------------\r\n"
@@ -195,12 +214,12 @@ class Check():
             os.rename(src, dst)
 
     def move_faces(self, output_folder, items_output):
-        """ Make additional subdirs for each face that appears
+        """ Make additional subfolders for each face that appears
             Enables easier manual sorting """
         logger.info("Moving %s faces(s) to '%s'", len(items_output), output_folder)
         for frame, idx in items_output:
             src = os.path.join(self.source_dir, frame)
-            dst_folder = os.path.join(output_folder, str(idx))
+            dst_folder = os.path.join(output_folder, str(idx)) if idx != -1 else output_folder
             if not os.path.isdir(dst_folder):
                 logger.debug("Creating folder: '%s'", dst_folder)
                 os.makedirs(dst_folder)
@@ -239,7 +258,7 @@ class Draw():
         legacy.process()
 
         logger.info("[DRAW LANDMARKS]")  # Tidy up cli output
-        self.extracted_faces = ExtractedFaces(self.frames, self.alignments,
+        self.extracted_faces = ExtractedFaces(self.frames, self.alignments, size=256,
                                               align_eyes=self.arguments.align_eyes)
         frames_drawn = 0
         for frame in tqdm(self.frames.file_list_sorted, desc="Drawing landmarks"):
@@ -281,7 +300,7 @@ class Extract():
         self.type = arguments.job.replace("extract-", "")
         self.faces_dir = arguments.faces_dir
         self.frames = Frames(arguments.frames_dir)
-        self.extracted_faces = ExtractedFaces(self.frames, self.alignments,
+        self.extracted_faces = ExtractedFaces(self.frames, self.alignments, size=arguments.size,
                                               align_eyes=arguments.align_eyes)
         logger.debug("Initialized %s", self.__class__.__name__)
 
@@ -352,8 +371,7 @@ class Extract():
             valid_faces = faces
         else:
             sizes = self.extracted_faces.get_roi_size_for_frame(frame)
-            valid_faces = [faces[idx]
-                           for idx, size in enumerate(sizes)
+            valid_faces = [faces[idx] for idx, size in enumerate(sizes)
                            if size >= self.extracted_faces.size]
         logger.trace("frame: '%s', total_faces: %s, valid_faces: %s",
                      frame, len(faces), len(valid_faces))
@@ -362,8 +380,6 @@ class Extract():
 
 class Legacy():
     """ Update legacy alignments:
-
-        - Add frame dimensions
         - Rotate landmarks and bounding boxes on legacy alignments
           and remove the 'r' parameter
         - Add face hashes to alignments file
@@ -383,16 +399,11 @@ class Legacy():
 
     def process(self):
         """ Run the rotate alignments process """
-        no_dims = self.alignments.get_legacy_no_dims()
         rotated = self.alignments.get_legacy_rotation()
         hashes = self.alignments.get_legacy_no_hashes()
-        if (not self.frames or (not no_dims and not rotated)) and (not self.faces or not hashes):
+        if (not self.frames or not rotated) and (not self.faces or not hashes):
             return
         logger.info("[UPDATE LEGACY LANDMARKS]")  # Tidy up cli output
-        if no_dims and self.frames:
-            logger.info("Legacy landmarks found. Adding frame dimensions...")
-            self.add_dimensions(no_dims)
-            self.alignments.save()
         if rotated and self.frames:
             logger.info("Legacy rotated frames found. Converting...")
             self.rotate_landmarks(rotated)
@@ -402,20 +413,13 @@ class Legacy():
             self.add_hashes(hashes)
             self.alignments.save()
 
-    def add_dimensions(self, no_dims):
-        """ Add width and height of original frame to alignments """
-        for no_dim in tqdm(no_dims, desc="Adding Frame Dimensions"):
-            if no_dim not in self.frames.items.keys():
-                continue
-            dims = self.frames.load_image(no_dim).shape[:2]
-            self.alignments.add_dimensions(no_dim, dims)
-
     def rotate_landmarks(self, rotated):
         """ Rotate the landmarks """
         for rotate_item in tqdm(rotated, desc="Rotating Landmarks"):
-            if rotate_item not in self.frames.items.keys():
+            frame = self.frames.get(rotate_item, None)
+            if frame is None:
                 continue
-            self.alignments.rotate_existing_landmarks(rotate_item)
+            self.alignments.rotate_existing_landmarks(rotate_item, frame)
 
     def add_hashes(self, hashes):
         """ Add Face Hashes to the alignments file """
@@ -722,23 +726,33 @@ class Rename():
     def check_multi_hashes(self, faces, frame, idx):
         """ Check filenames for where multiple faces have the
             same hash (e.g. for freeze frames) """
+        logger.debug("Multiple hashes: (frame: faces: %s, frame: '%s', idx: %s", faces, frame, idx)
         frame_idx = "{}_{}".format(frame, idx)
+        retval = None
         for face_name, extension in faces:
             if (face_name, extension) in self.seen_multihash:
                 # Don't return a filename that has already been processed
+                logger.debug("Already seen: %s", (face_name, extension))
                 continue
             if face_name == frame_idx:
                 # If a matching filename already exists return that
-                self.seen_multihash.add((face_name, extension))
-                return face_name, extension
+                retval = (face_name, extension)
+                logger.debug("Matching filename found: %s", retval)
+                self.seen_multihash.add(retval)
+                break
             if face_name.startswith(frame):
                 # If a matching framename already exists return that
-                self.seen_multihash.add((face_name, extension))
-                return face_name, extension
-        # If no matches, just pop the first filename
-        face_name, extension = faces[0]
-        self.seen_multihash.add((face_name, extension))
-        return face_name, extension
+                retval = (face_name, extension)
+                logger.debug("Matching freamename found: %s", retval)
+                self.seen_multihash.add(retval)
+                break
+        if not retval:
+            # If no matches, just pop the first filename
+            retval = [face for face in faces if face not in self.seen_multihash][0]
+            logger.debug("No matches found. Choosing: %s", retval)
+            self.seen_multihash.add(retval)
+        logger.debug("Returning: %s", retval)
+        return retval
 
 
 class Sort():
@@ -838,19 +852,19 @@ class Spatial():
                     "alignments -j extract -a %s -fr <path_to_frames_dir> -fc "
                     "<output_folder>", self.arguments.alignments_file)
 
-    # define shape normalization utility functions
+    # Define shape normalization utility functions
     @staticmethod
     def normalize_shapes(shapes_im_coords):
         """ Normalize a 2D or 3D shape """
         logger.debug("Normalize shapes")
         (num_pts, num_dims, _) = shapes_im_coords.shape
 
-        # calc mean coords and subtract from shapes
+        # Calculate mean coordinates and subtract from shapes
         mean_coords = shapes_im_coords.mean(axis=0)
         shapes_centered = np.zeros(shapes_im_coords.shape)
         shapes_centered = shapes_im_coords - np.tile(mean_coords, [num_pts, 1, 1])
 
-        # calc scale factors and divide shapes
+        # Calculate scale factors and divide shapes
         scale_factors = np.sqrt((shapes_centered**2).sum(axis=1)).mean(axis=0)
         shapes_normalized = np.zeros(shapes_centered.shape)
         shapes_normalized = shapes_centered / np.tile(scale_factors, [num_pts, num_dims, 1])
@@ -889,12 +903,12 @@ class Spatial():
             landmarks = np.array(val[0]["landmarksXY"]).reshape(68, 2, 1)
             start = end
             end = start + landmarks.shape[2]
-            # store in one big array
+            # Store in one big array
             landmarks_all[:, :, start:end] = landmarks
-            # make sure we keep track of the mapping to the original frame
+            # Make sure we keep track of the mapping to the original frame
             self.mappings[start] = key
 
-        # normalize shapes
+        # Normalize shapes
         normalized_shape = self.normalize_shapes(landmarks_all)
         self.normalized["landmarks"] = normalized_shape[0]
         self.normalized["scale_factors"] = normalized_shape[1]
@@ -920,15 +934,15 @@ class Spatial():
             (project and reconstruct) """
         logger.debug("Spatially Filter")
         landmarks_norm = self.normalized["landmarks"]
-        # convert to matrix form
+        # Convert to matrix form
         landmarks_norm_table = np.reshape(landmarks_norm, [68 * 2, landmarks_norm.shape[2]]).T
-        # project onto shapes model and reconstruct
+        # Project onto shapes model and reconstruct
         landmarks_norm_table_rec = self.shapes_model.inverse_transform(
             self.shapes_model.transform(landmarks_norm_table))
-        # convert back to shapes (numKeypoint, num_dims, numFrames)
+        # Convert back to shapes (numKeypoint, num_dims, numFrames)
         landmarks_norm_rec = np.reshape(landmarks_norm_table_rec.T,
                                         [68, 2, landmarks_norm.shape[2]])
-        # transform back to image coords
+        # Transform back to image coords
         retval = self.normalized_to_original(landmarks_norm_rec,
                                              self.normalized["scale_factors"],
                                              self.normalized["mean_coords"])
