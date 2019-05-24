@@ -155,7 +155,7 @@ class Environment():
     def check_pip(self):
         """ Check installed pip version """
         try:
-            import pip
+            import pip  # noqa pylint:disable=unused-import
         except ImportError:
             self.output.error("Import pip failed. Please Install python3-pip and try again")
             exit(1)
@@ -178,7 +178,7 @@ class Environment():
     def get_installed_packages(self):
         """ Get currently installed packages """
         installed_packages = dict()
-        chk = Popen("{} -m pip freeze".format(sys.executable),
+        chk = Popen("\"{}\" -m pip freeze".format(sys.executable),
                     shell=True, stdout=PIPE)
         installed = chk.communicate()[0].decode(self.encoding).splitlines()
 
@@ -295,7 +295,7 @@ class Output():
 
     def error(self, text):
         """ Format ERROR Text """
-        global INSTALL_FAILED
+        global INSTALL_FAILED  # pylint:disable=global-statement
         trm = "ERROR   "
         if self.term_support_color:
             trm = "{}ERROR  {} ".format(self.red, self.default_color)
@@ -325,7 +325,9 @@ class Checks():
             exit(0)
 
     # Check for CUDA and cuDNN
-        if self.env.enable_cuda and self.env.os_version[0] in ("Linux", "Windows"):
+        if self.env.enable_cuda and self.env.is_conda:
+            self.output.info("Skipping Cuda/cuDNN checks for Conda install")
+        elif self.env.enable_cuda and self.env.os_version[0] in ("Linux", "Windows"):
             self.cuda_check()
             self.cudnn_check()
         elif self.env.enable_cuda and self.env.os_version[0] not in ("Linux", "Windows"):
@@ -334,7 +336,6 @@ class Checks():
             self.env.cuda_version = input("Manually specify CUDA version: ")
 
         self.env.update_tf_dep()
-        self.check_system_dependencies()
         if self.env.os_version[0] == "Windows":
             self.tips.pip()
 
@@ -376,6 +377,15 @@ class Checks():
 
     def cuda_check(self):
         """ Check Cuda for Linux or Windows """
+        chk = Popen("nvcc -V", shell=True, stdout=PIPE, stderr=PIPE)
+        stdout, stderr = chk.communicate()
+        if not stderr:
+            version = re.search(r".*release (?P<cuda>\d+\.\d+)", stdout.decode(self.env.encoding))
+            self.env.cuda_version = version.groupdict().get("cuda", None)
+            if self.env.cuda_version:
+                self.output.info("CUDA version: " + self.env.cuda_version)
+                return
+        # Failed to load nvcc
         if self.env.os_version[0] == "Linux":
             self.cuda_check_linux()
         elif self.env.os_version[0] == "Windows":
@@ -420,8 +430,17 @@ class Checks():
 
     def cudnn_check(self):
         """ Check Linux or Windows cuDNN Version from cudnn.h """
-        cudnn_checkfile = os.path.join(self.env.cuda_path, "include", "cudnn.h")
-        if not os.path.isfile(cudnn_checkfile):
+        if self.env.os_version[0] == "Linux":
+            cudnn_checkfiles = self.cudnn_checkfiles_linux()
+        elif self.env.os_version[0] == "Windows":
+            cudnn_checkfiles = self.cudnn_checkfiles_windows()
+
+        cudnn_checkfile = None
+        for checkfile in cudnn_checkfiles:
+            if os.path.isfile(checkfile):
+                cudnn_checkfile = checkfile
+                break
+        if not cudnn_checkfile:
             self.output.error("cuDNN not found. See "
                               "https://github.com/deepfakes/faceswap/blob/master/INSTALL.md#cudnn "
                               "for instructions")
@@ -449,115 +468,25 @@ class Checks():
         self.env.cudnn_version = "{}.{}".format(major, minor)
         self.output.info("cuDNN version: {}.{}".format(self.env.cudnn_version, patchlevel))
 
-    def check_system_dependencies(self):
-        """ Check that system applications are installed """
-        self.output.info("Checking System Dependencies...")
-        self.cmake_check()
-        if self.env.os_version[0] == "Windows":
-            self.visual_studio_check()
-            self.check_cplus_plus()
-        if self.env.os_version[0] == "Linux":
-            self.gcc_check()
-            self.gpp_check()
+    @staticmethod
+    def cudnn_checkfiles_linux():
+        """ Return the checkfile locations for linux """
+        chk = os.popen("ldconfig -p | grep -P \"libcudnn.so.\\d+\" | head -n 1").read()
+        chk = chk.strip().replace("libcudnn.so.", "")
+        cudnn_vers = chk[0]
+        cudnn_path = chk[chk.find("=>") + 3:chk.find("libcudnn") - 1]
+        cudnn_path = cudnn_path.replace("lib", "include")
+        cudnn_checkfiles = [os.path.join(cudnn_path, "cudnn_v{}.h".format(cudnn_vers)),
+                            os.path.join(cudnn_path, "cudnn.h")]
+        return cudnn_checkfiles
 
-    def gcc_check(self):
-        """ Check installed gcc version for linux """
-        chk = Popen("gcc --version", shell=True, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = chk.communicate()
-        if stderr:
-            self.output.error("gcc not installed. Please install gcc for your distribution")
-            return
-        gcc = [re.sub(" +", " ", line.strip())
-               for line in stdout.decode(self.env.encoding).splitlines()
-               if line.lower().strip().startswith("gcc")][0]
-        version = gcc[gcc.rfind(" ") + 1:]
-        self.output.info("gcc version: {}".format(version))
-
-    def gpp_check(self):
-        """ Check installed g++ version for linux """
-        chk = Popen("g++ --version", shell=True, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = chk.communicate()
-        if stderr:
-            self.output.error("g++ not installed. Please install g++ for your distribution")
-            return
-        gpp = [re.sub(" +", " ", line.strip())
-               for line in stdout.decode(self.env.encoding).splitlines()
-               if line.lower().strip().startswith("g++")][0]
-        version = gpp[gpp.rfind(" ") + 1:]
-        self.output.info("g++ version: {}".format(version))
-
-    def cmake_check(self):
-        """ Check CMake is installed """
-        chk = Popen("cmake --version", shell=True, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = chk.communicate()
-        stdout = stdout.decode(self.env.encoding)
-        if stderr and self.env.os_version[0] == "Windows":
-            stdout, stderr = self.cmake_check_windows()
-        if stderr:
-            self.output.error("CMake could not be found. See "
-                              "https://github.com/deepfakes/faceswap/blob/master/INSTALL.md#cmake "
-                              "for instructions")
-            return
-        cmake = [re.sub(" +", " ", line.strip())
-                 for line in stdout.splitlines()
-                 if line.lower().strip().startswith("cmake")][0]
-        version = cmake[cmake.rfind(" ") + 1:]
-        self.output.info("CMake version: {}".format(version))
-
-    def cmake_check_windows(self):
-        """ Additional checks for cmake on Windows """
-        chk = Popen("wmic product where \"name = 'cmake'\" get installlocation,version",
-                    shell=True, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = chk.communicate()
-        if stderr:
-            return False, stderr
-        lines = [re.sub(" +", " ", line.strip())
-                 for line in stdout.decode(self.env.encoding).splitlines()
-                 if line.strip()]
-        stdout = lines[1]
-        location = stdout[:stdout.rfind(" ")] + "bin"
-        self.output.info("CMake not found in %PATH%. Temporarily adding: \"{}\"".format(location))
-        os.environ["PATH"] += ";{}".format(location)
-        stdout = "cmake {}".format(stdout)
-        return stdout, False
-
-    def visual_studio_check(self):
-        """ Check Visual Studio 2015 is installed for Windows
-
-            Somewhat hacky solution which checks for the existence
-            of the VS2015 Performance Report
-        """
-        chk = Popen("reg query HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VSPerf",
-                    shell=True, stdout=PIPE, stderr=PIPE)
-        _, stderr = chk.communicate()
-        if stderr:
-            self.output.error("Visual Studio 2015 could not be found. See "
-                              "https://github.com/deepfakes/faceswap/blob/master/"
-                              "INSTALL.md#microsoft-visual-studio-2015 for instructions")
-            return
-        self.output.info("Visual Studio 2015 version: 14.0")
-
-    def check_cplus_plus(self):
-        """ Check Visual C++ Redistributable 2015 is instlled for Windows """
-        keys = (
-            "HKLM\\SOFTWARE\\Classes\\Installer\\Dependencies\\{d992c12e-cab2-426f-bde3-fb8c53950b0d}",
-            "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64")
-        for key in keys:
-            chk = Popen("reg query {}".format(key), shell=True, stdout=PIPE, stderr=PIPE)
-            stdout, stderr = chk.communicate()
-            if stdout:
-                break
-        if stderr:
-            self.output.error("Visual C++ 2015 could not be found. Make sure you have selected "
-                              "'Visual C++' in Visual Studio 2015 Configuration or download the "
-                              "Visual C++ 2015 Redistributable from: "
-                              "https://www.microsoft.com/en-us/download/details.aspx?id=48145")
-            return
-        vscpp = [re.sub(" +", " ", line.strip())
-                 for line in stdout.decode(self.env.encoding).splitlines()
-                 if line.lower().strip().startswith(("displayname", "version"))][0]
-        version = vscpp[vscpp.find("REG_SZ") + 7:]
-        self.output.info("Visual Studio C++ version: {}".format(version))
+    def cudnn_checkfiles_windows(self):
+        """ Return the checkfile locations for windows """
+        # TODO A more reliable way of getting the windows location
+        if not self.env.cuda_path:
+            return list()
+        cudnn_checkfile = os.path.join(self.env.cuda_path, "include", "cudnn.h")
+        return [cudnn_checkfile]
 
 
 class Install():
@@ -614,10 +543,11 @@ class Install():
 
     def install_missing_dep(self):
         """ Install missing dependencies """
-        if self.env.missing_packages:
-            self.install_python_packages()
+        # Install conda packages first
         if self.env.conda_missing_packages:
             self.install_conda_packages()
+        if self.env.missing_packages:
+            self.install_python_packages()
 
     def install_python_packages(self):
         """ Install required pip packages """
@@ -669,18 +599,7 @@ class Install():
         # install as user to solve perm restriction
         if not self.env.is_admin and not self.env.is_virtualenv:
             pipexe.append("--user")
-        if package.startswith("dlib"):
-            opt = "yes" if self.env.enable_cuda else "no"
-            pipexe.extend(["--install-option=--{}".format(opt),
-                           "--install-option=DLIB_USE_CUDA"])
-            if self.env.os_version[0] == "Windows":
-                pipexe.extend(["--global-option=-G",
-                               "--global-option=Visual Studio 14 2015"])
-            msg = ("Compiling {}. This will take a while...\n"
-                   "Please ignore the following UserWarning: "
-                   "'Disabling all use of wheels...'".format(package))
-        else:
-            msg = "Installing {}".format(package)
+        msg = "Installing {}".format(package)
         self.output.info(msg)
         pipexe.append(package)
         try:
@@ -723,7 +642,8 @@ class Tips():
             "\t-e UID=`id -u` \\ \n"
             "\tdeepfakes-cpu \n\n"
             "4. Open a new terminal to run faceswap.py in /srv\n"
-            "docker exec -it deepfakes-cpu bash".format(path=os.path.dirname(os.path.realpath(__file__))))
+            "docker exec -it deepfakes-cpu bash".format(
+                path=os.path.dirname(os.path.realpath(__file__))))
         self.output.info("That's all you need to do with a docker. Have fun.")
 
     def docker_cuda(self):
@@ -760,7 +680,8 @@ class Tips():
             "\t-e UID=`id -u` \\ \n"
             "\tdeepfakes-gpu\n\n"
             "6. Open a new terminal to interact with the project\n"
-            "docker exec deepfakes-gpu python /srv/tools.py gui\n".format(path=os.path.dirname(os.path.realpath(__file__))))
+            "docker exec deepfakes-gpu python /srv/tools.py gui\n".format(
+                path=os.path.dirname(os.path.realpath(__file__))))
 
     def macos(self):
         """ Output Tips for macOS"""
@@ -774,8 +695,8 @@ class Tips():
             "will handle the installation of CUDA and cuDNN for you:\n"
             "https://www.anaconda.com/distribution/\n\n"
 
-            "2b. If you do not want to use Anaconda, or if you wish to compile DLIB with GPU\n"
-            "support you will need to manually install CUDA and cuDNN:\n"
+            "2b. If you do not want to use Anaconda you will need to manually install CUDA and "
+            "cuDNN:\n"
             "CUDA: https://developer.nvidia.com/cuda-downloads"
             "cuDNN: https://developer.nvidia.com/rdp/cudnn-download\n\n")
 

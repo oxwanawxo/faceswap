@@ -55,6 +55,12 @@ def set_slider_rounding(value, var, d_type, round_to, min_max):
         var.set(value)
 
 
+def adjust_wraplength(event):
+    """ dynamically adjust the wraplength of a label on event """
+    label = event.widget
+    label.configure(wraplength=event.width - 1)
+
+
 class FileHandler():
     """ Raise a filedialog box and capture input """
 
@@ -96,14 +102,14 @@ class FileHandler():
         filetypes = {"default": (all_files,),
                      "alignments": [("JSON", "*.json"),
                                     ("Pickle", "*.p"),
-                                    ("YAML", "*.yaml"),
+                                    ("YAML", "*.yaml" "*.yml"),  # pylint: disable=W1403
                                     all_files],
                      "config": [("Faceswap config files", "*.fsw"), all_files],
                      "csv": [("Comma separated values", "*.csv"), all_files],
                      "image": [("Bitmap", "*.bmp"),
-                               ("JPG", "*.jpeg", "*.jpg"),
+                               ("JPG", "*.jpeg" "*.jpg"),  # pylint: disable=W1403
                                ("PNG", "*.png"),
-                               ("TIFF", "*.tif", "*.tiff"),
+                               ("TIFF", "*.tif" "*.tiff"),  # pylint: disable=W1403
                                all_files],
                      "state": [("State files", "*.json"), all_files],
                      "log": [("Log files", "*.log"), all_files],
@@ -144,7 +150,7 @@ class FileHandler():
             self.set_context_handletype(command, action, variable)
 
         if self.handletype.lower() in (
-                "open", "save", "filename", "savefilename"):
+                "open", "save", "filename", "filename_multi", "savefilename"):
             kwargs["filetypes"] = self.filetypes[filetype]
             if self.defaults.get(filetype, None):
                 kwargs['defaultextension'] = self.defaults[filetype]
@@ -189,6 +195,11 @@ class FileHandler():
         logger.debug("Popping Filename browser")
         return filedialog.askopenfilename(**self.kwargs)
 
+    def filename_multi(self):
+        """ Get multiple existing file locations """
+        logger.debug("Popping Filename browser")
+        return filedialog.askopenfilenames(**self.kwargs)
+
     def savefilename(self):
         """ Get a save file location """
         logger.debug("Popping SaveFilename browser")
@@ -220,6 +231,8 @@ class Images():
         self.icons["folder"] = ImageTk.PhotoImage(file=os.path.join(
             self.pathicons, "open_folder.png"))
         self.icons["load"] = ImageTk.PhotoImage(file=os.path.join(
+            self.pathicons, "open_file.png"))
+        self.icons["load_multi"] = ImageTk.PhotoImage(file=os.path.join(
             self.pathicons, "open_file.png"))
         self.icons["context"] = ImageTk.PhotoImage(file=os.path.join(
             self.pathicons, "open_file.png"))
@@ -348,8 +361,7 @@ class Images():
                 except OSError:
                     if i == 999:
                         raise
-                    else:
-                        continue
+                    continue
                 break
 
         self.previewtrain[name][1] = ImageTk.PhotoImage(displayimg)
@@ -524,13 +536,17 @@ class Config():
         updatepreview = tk.BooleanVar()
         updatepreview.set(False)
 
+        traintimeout = tk.IntVar()
+        traintimeout.set(120)
+
         tk_vars = {"display": display,
                    "runningtask": runningtask,
                    "action": actioncommand,
                    "generate": generatecommand,
                    "consoleclear": consoleclear,
                    "refreshgraph": refreshgraph,
-                   "updatepreview": updatepreview}
+                   "updatepreview": updatepreview,
+                   "traintimeout": traintimeout}
         logger.debug(tk_vars)
         return tk_vars
 

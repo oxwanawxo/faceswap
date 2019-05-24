@@ -225,7 +225,7 @@ class OptionControl():
         logger.debug("Format control help: '%s'", ctltitle)
         ctlhelp = self.option.get("help", "")
         if ctlhelp.startswith("R|"):
-            ctlhelp = ctlhelp[2:].replace("\n\t", " ").replace("\n'", "\n\n'")
+            ctlhelp = ctlhelp[2:].replace("\nL|", "\n - ").replace("\n", "\n\n")
         else:
             ctlhelp = " ".join(ctlhelp.split())
         ctlhelp = ctlhelp.replace("%%", "%")
@@ -297,7 +297,7 @@ class OptionControl():
 
             ctl = ttk.Radiobutton(radio_frame, text=choice.title(), value=choice, variable=var)
             ctl.pack(anchor=tk.W)
-            Tooltip(ctl, text=helptext, wraplength=720)
+            Tooltip(ctl, text=helptext, wraplength=920)
         logger.debug("Added radio group: '%s'", control_title)
 
     def checkbutton_to_checkframe(self, control, control_title, var, helptext):
@@ -334,8 +334,8 @@ class OptionControl():
         ctl["from_"] = min_max[0]
         ctl["to"] = min_max[1]
 
-        Tooltip(ctl, text=helptext, wraplength=720)
-        Tooltip(tbox, text=helptext, wraplength=720)
+        Tooltip(ctl, text=helptext, wraplength=920)
+        Tooltip(tbox, text=helptext, wraplength=920)
         logger.debug("Added slider control to Options Frame: %s", control)
 
     @staticmethod
@@ -386,6 +386,15 @@ class OptionControl():
         if filename:
             logger.debug(filename)
             filepath.set(filename)
+
+    @staticmethod
+    def ask_load_multi(filepath, filetypes):
+        """ Pop-up to get path to a file """
+        filenames = FileHandler("filename_multi", filetypes).retfile
+        if filenames:
+            final_names = " ".join("\"{}\"".format(fname) for fname in filenames)
+            logger.debug(final_names)
+            filepath.set(final_names)
 
     @staticmethod
     def ask_save(filepath, filetypes=None):
@@ -454,11 +463,42 @@ class ActionFrame(ttk.Frame):  # pylint: disable=too-many-ancestors
                             text="Generate",
                             width=10,
                             command=lambda: tk_vars["generate"].set(var_value))
-        btngen.pack(side=tk.RIGHT, padx=5)
+        btngen.pack(side=tk.LEFT, padx=5)
+        if self.command == "train":
+            self.add_timeout(actframe)
         Tooltip(btngen,
                 text="Output command line options to the console",
                 wraplength=200)
         logger.debug("Added action buttons: '%s'", self.title)
+
+    def add_timeout(self, actframe):
+        """ Add a timeout option for training """
+        logger.debug("Adding timeout box for %s", self.command)
+        tk_var = get_config().tk_vars["traintimeout"]
+        min_max = (10, 600)
+
+        frameto = ttk.Frame(actframe)
+        frameto.pack(padx=5, pady=5, side=tk.RIGHT, fill=tk.X, expand=True)
+        lblto = ttk.Label(frameto, text="Timeout:", anchor=tk.W)
+        lblto.pack(side=tk.LEFT)
+        sldto = ttk.Scale(frameto,
+                          variable=tk_var,
+                          from_=min_max[0],
+                          to=min_max[1],
+                          command=lambda val, var=tk_var, dt=int, rn=10, mm=min_max:
+                          set_slider_rounding(val, var, dt, rn, mm))
+        sldto.pack(padx=5, side=tk.LEFT, fill=tk.X, expand=True)
+        tboxto = ttk.Entry(frameto, width=3, textvariable=tk_var, justify=tk.RIGHT)
+        tboxto.pack(side=tk.RIGHT)
+        helptxt = ("Training can take some time to save and shutdown. "
+                   "Set the timeout in seconds before giving up and force quitting.")
+        Tooltip(sldto,
+                text=helptxt,
+                wraplength=200)
+        Tooltip(tboxto,
+                text=helptxt,
+                wraplength=200)
+        logger.debug("Added timeout box for %s", self.command)
 
     def add_util_buttons(self):
         """ Add the section utility buttons """
