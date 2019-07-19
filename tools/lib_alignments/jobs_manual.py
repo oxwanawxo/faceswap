@@ -450,7 +450,8 @@ class Manual():
                                               align_eyes=self.align_eyes)
         self.interface = Interface(self.alignments, self.frames)
         self.help = Help(self.interface)
-        self.mouse_handler = MouseHandler(self.interface, self.arguments.loglevel)
+        self.mouse_handler = MouseHandler(self.interface, self.arguments.loglevel,
+                                          amd=self.arguments.amd)
 
         print(self.help.helptext)
         max_idx = self.frames.count - 1
@@ -749,14 +750,15 @@ class FacesDisplay():
 
 class MouseHandler():
     """ Manual Extraction """
-    def __init__(self, interface, loglevel):
-        logger.debug("Initializing %s: (interface: %s)", self.__class__.__name__, interface)
+    def __init__(self, interface, loglevel, amd=False):
+        logger.debug("Initializing %s: (interface: %s, loglevel: %s, amd: %s)",
+                     self.__class__.__name__, interface, loglevel, amd)
         self.interface = interface
         self.alignments = interface.alignments
         self.frames = interface.frames
 
         self.extractor = dict()
-        self.init_extractor(loglevel)
+        self.init_extractor(loglevel, amd)
 
         self.mouse_state = None
         self.last_move = None
@@ -769,8 +771,8 @@ class MouseHandler():
                       "bounding_box_orig": list()}
         logger.debug("Initialized %s", self.__class__.__name__)
 
-    def init_extractor(self, loglevel):
-        """ Initialize FAN """
+    def init_extractor(self, loglevel, amd):
+        """ Initialize Aligner """
         logger.debug("Initialize Extractor")
         out_queue = queue_manager.get_queue("out")
 
@@ -784,8 +786,11 @@ class MouseHandler():
         d_event = detect_process.event
         detect_process.start()
 
-        for plugin in ("fan", "cv2_dnn"):
-            aligner = PluginLoader.get_aligner(plugin)(loglevel=loglevel)
+        plugins = ["fan_amd"] if amd else ["fan"]
+        plugins.append("cv2_dnn")
+        for plugin in plugins:
+            aligner = PluginLoader.get_aligner(plugin)(loglevel=loglevel,
+                                                       normalize_method="hist")
             align_process = SpawnProcess(aligner.run, **a_kwargs)
             a_event = align_process.event
             align_process.start()
@@ -795,7 +800,7 @@ class MouseHandler():
             # up to 3-4 minutes, hence high timeout.
             a_event.wait(300)
             if not a_event.is_set():
-                if plugin == "fan":
+                if plugin.startswith("fan"):
                     align_process.join()
                     logger.error("Error initializing FAN. Trying CV2-DNN")
                     continue
@@ -985,9 +990,9 @@ class MouseHandler():
         """ Convert Extracted Tuple to Alignments data """
         alignment = dict()
         bbox, landmarks = extract_data
-        alignment["x"] = bbox.left
-        alignment["w"] = bbox.width
-        alignment["y"] = bbox.top
-        alignment["h"] = bbox.height
+        alignment["x"] = bbox["left"]
+        alignment["w"] = bbox["right"] - bbox["left"]
+        alignment["y"] = bbox["top"]
+        alignment["h"] = bbox["bottom"] - bbox["top"]
         alignment["landmarksXY"] = landmarks
         return alignment
